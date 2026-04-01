@@ -1,4 +1,5 @@
 Add-Content .gitignore "*.parquet"
 Add-Content .gitignore "!output/m1_final_clean.parquet"
 Add-Content .gitignore "output/*"
-Add-Content .gitignore "!output/"
+Add-Content .gitignore "!output/"output/*
+!output/m1_final_clean.parquet
