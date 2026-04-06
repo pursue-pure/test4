@@ -334,12 +334,335 @@ class M1DataPipeline:
     def load(self, metrics: dict) -> None:
         log.info("=== LOAD 阶段开始 ===")
         try:
+            self._write_report_charts(metrics)
             self._write_chart(metrics)
             self._write_report(metrics)
             log.info("LOAD 完成")
         except Exception as exc:
             log.error("LOAD 失败: %s", exc)
             raise
+
+    def _write_report_charts(self, metrics: dict) -> None:
+        """生成适合实验报告直接插入的独立图表。"""
+        self._write_dedup_chart(metrics)
+        self._write_funnel_chart(metrics)
+        self._write_anomaly_chart(metrics)
+        self._write_final_chart(metrics)
+
+    def _write_dedup_chart(self, metrics: dict) -> None:
+        """输出去重前后对比 + 行为分布图。"""
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+        # 左图：去重前后行数对比
+        ax1 = axes[0]
+        labels = ["原始数据", "去重后数据"]
+        values = [metrics["raw_rows"], metrics["dedup_rows"]]
+        colors = ["#DD8452", "#4C72B0"]
+        bars = ax1.bar(labels, values, color=colors, width=0.55, edgecolor="white")
+        max_val = max(values)
+        for bar, val in zip(bars, values):
+            ax1.text(
+                bar.get_x() + bar.get_width() / 2,
+                val + max_val * 0.01,
+                f"{val:,}",
+                ha="center",
+                va="bottom",
+                fontsize=10,
+                fontweight="bold",
+            )
+        ax1.set_title("去重前后数据量对比", fontsize=13, fontweight="bold")
+        ax1.set_ylabel("记录数", fontsize=11)
+        ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{int(x):,}"))
+        ax1.grid(axis="y", alpha=0.3)
+        ax1.text(
+            0.5,
+            0.92,
+            f"移除重复: {metrics['removed_rows']:,} 行\n重复占比: {metrics['duplicate_ratio']*100:.4f}%",
+            transform=ax1.transAxes,
+            ha="center",
+            va="top",
+            fontsize=10,
+            bbox={"boxstyle": "round,pad=0.35", "facecolor": "#FFF7E6", "edgecolor": "#DD8452"},
+        )
+
+        # 右图：行为分布柱状图
+        ax2 = axes[1]
+        dist = metrics["behavior_dist"].sort("count", descending=True)
+        behaviors = dist["behavior_type"].to_list()
+        counts = dist["count"].to_list()
+        bar_colors = ["#4C72B0", "#55A868", "#8172B3", "#C44E52"]
+        bars = ax2.bar(behaviors, counts, color=bar_colors[:len(behaviors)], width=0.55, edgecolor="white")
+        max_count = max(counts)
+        for bar, count in zip(bars, counts):
+            pct = count / metrics["dedup_rows"] * 100
+            ax2.text(
+                bar.get_x() + bar.get_width() / 2,
+                count + max_count * 0.01,
+                f"{count:,}\n({pct:.2f}%)",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+            )
+        ax2.set_title("去重后行为类型分布", fontsize=13, fontweight="bold")
+        ax2.set_ylabel("记录数", fontsize=11)
+        ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{int(x):,}"))
+        ax2.grid(axis="y", alpha=0.3)
+
+        plt.tight_layout()
+        out_path = self.output_dir / "task1_dedup_chart.png"
+        fig.savefig(out_path.as_posix(), dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        log.info("实验报告图已保存: %s", out_path)
+
+    def _write_funnel_chart(self, metrics: dict) -> None:
+        """输出用户行为漏斗分析图。"""
+        funnel = metrics["funnel"]
+        stages = ["浏览(PV)", "收藏/加购", "购买"]
+        users = [funnel["pv_users"], funnel["mid_users"], funnel["buy_users"]]
+        rates = [1.0, funnel["mid_from_pv"], funnel["buy_from_pv"]]
+
+        fig, ax = plt.subplots(figsize=(9, 6))
+        colors = ["#4C72B0", "#55A868", "#C44E52"]
+        bars = ax.bar(stages, users, color=colors, width=0.58, edgecolor="white")
+
+        max_users = max(users)
+        for bar, user_cnt, rate in zip(bars, users, rates):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                user_cnt + max_users * 0.015,
+                f"{user_cnt:,}",
+                ha="center",
+                va="bottom",
+                fontsize=10,
+                fontweight="bold",
+            )
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                user_cnt / 2,
+                f"{rate*100:.2f}%",
+                ha="center",
+                va="center",
+                fontsize=11,
+                color="white",
+                fontweight="bold",
+            )
+
+        ax.annotate(
+            f"收藏/加购 → 购买转化率: {funnel['buy_from_mid']*100:.2f}%",
+            xy=(1.5, max_users * 0.9),
+            xytext=(1.5, max_users * 1.02),
+            ha="center",
+            fontsize=10,
+            bbox={"boxstyle": "round,pad=0.35", "facecolor": "#F2F8FF", "edgecolor": "#4C72B0"},
+        )
+        ax.set_title("用户行为转化漏斗", fontsize=14, fontweight="bold")
+        ax.set_ylabel("用户数", fontsize=11)
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{int(x):,}"))
+        ax.grid(axis="y", alpha=0.3)
+
+        plt.tight_layout()
+        out_path = self.output_dir / "task3_funnel_chart.png"
+        fig.savefig(out_path.as_posix(), dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        log.info("实验报告图已保存: %s", out_path)
+
+    def _write_anomaly_chart(self, metrics: dict) -> None:
+        """输出异常账号检测图。"""
+        anomaly = metrics["anomaly"]
+        top = anomaly["top_suspects"]
+
+        fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+
+        # 左图：异常账号概览
+        ax1 = axes[0]
+        labels = ["全量用户", "嫌疑账号"]
+        values = [anomaly["total_users"], anomaly["suspect_count"]]
+        colors = ["#4C72B0", "#C44E52"]
+        bars = ax1.bar(labels, values, color=colors, width=0.55, edgecolor="white")
+        max_val = max(values) if values else 1
+        for bar, val in zip(bars, values):
+            ax1.text(
+                bar.get_x() + bar.get_width() / 2,
+                val + max_val * 0.01,
+                f"{val:,}",
+                ha="center",
+                va="bottom",
+                fontsize=10,
+                fontweight="bold",
+            )
+        ax1.set_title("异常账号总体情况", fontsize=13, fontweight="bold")
+        ax1.set_ylabel("用户数", fontsize=11)
+        ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{int(x):,}"))
+        ax1.grid(axis="y", alpha=0.3)
+        ax1.text(
+            0.5,
+            0.92,
+            f"99分位阈值: {anomaly['threshold']}\n异常占比: {anomaly['suspect_ratio']*100:.4f}%",
+            transform=ax1.transAxes,
+            ha="center",
+            va="top",
+            fontsize=10,
+            bbox={"boxstyle": "round,pad=0.35", "facecolor": "#FFF5F5", "edgecolor": "#C44E52"},
+        )
+
+        # 右图：Top10 异常账号
+        ax2 = axes[1]
+        if len(top) > 0:
+            uids = [str(u) for u in top["user_id"].to_list()]
+            visits = top["total_visits"].to_list()
+            y_pos = list(range(len(uids)))
+            bars = ax2.barh(y_pos, visits, color="#C44E52", edgecolor="white")
+            ax2.set_yticks(y_pos)
+            ax2.set_yticklabels(uids, fontsize=8)
+            ax2.invert_yaxis()
+            for bar, val in zip(bars, visits):
+                ax2.text(
+                    val + max(visits) * 0.01,
+                    bar.get_y() + bar.get_height() / 2,
+                    str(val),
+                    va="center",
+                    fontsize=8,
+                )
+            ax2.axvline(
+                anomaly["threshold"],
+                color="#4C72B0",
+                linestyle="--",
+                linewidth=1.5,
+                label=f"阈值={anomaly['threshold']}",
+            )
+            ax2.legend(fontsize=9)
+        else:
+            ax2.text(0.5, 0.5, "未检测到异常账号", ha="center", va="center", fontsize=12)
+        ax2.set_title("异常账号 Top10（访问量）", fontsize=13, fontweight="bold")
+        ax2.set_xlabel("总访问次数", fontsize=11)
+        ax2.grid(axis="x", alpha=0.3)
+
+        plt.tight_layout()
+        out_path = self.output_dir / "task4_anomaly_chart.png"
+        fig.savefig(out_path.as_posix(), dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        log.info("实验报告图已保存: %s", out_path)
+
+    def _write_final_chart(self, metrics: dict) -> None:
+        """输出适合实验报告结尾展示的总览 KPI 图。"""
+        fig = plt.figure(figsize=(14, 8))
+        gs = fig.add_gridspec(2, 2, height_ratios=[1, 1.2])
+        fig.suptitle("M1 最终成果总览", fontsize=16, fontweight="bold")
+
+        # 左上：关键 KPI
+        ax1 = fig.add_subplot(gs[0, 0])
+        ax1.axis("off")
+        kpi_lines = [
+            f"原始总行数: {metrics['raw_rows']:,}",
+            f"去重后总行数: {metrics['dedup_rows']:,}",
+            f"移除重复行数: {metrics['removed_rows']:,}",
+            f"重复占比: {metrics['duplicate_ratio']*100:.4f}%",
+            f"输出文件大小: {metrics['file_mb']:.2f} MB",
+        ]
+        ax1.text(
+            0.03,
+            0.95,
+            "数据质量与产出规模",
+            fontsize=14,
+            fontweight="bold",
+            va="top",
+        )
+        ax1.text(
+            0.03,
+            0.78,
+            "\n".join(kpi_lines),
+            fontsize=11,
+            va="top",
+            linespacing=1.8,
+            bbox={"boxstyle": "round,pad=0.5", "facecolor": "#F6F8FB", "edgecolor": "#4C72B0"},
+        )
+
+        # 右上：漏斗 KPI
+        ax2 = fig.add_subplot(gs[0, 1])
+        ax2.axis("off")
+        funnel = metrics["funnel"]
+        funnel_lines = [
+            f"PV 用户数: {funnel['pv_users']:,}",
+            f"收藏/加购用户数: {funnel['mid_users']:,}",
+            f"购买用户数: {funnel['buy_users']:,}",
+            f"PV→收藏/加购: {funnel['mid_from_pv']*100:.2f}%",
+            f"PV→购买: {funnel['buy_from_pv']*100:.2f}%",
+            f"收藏/加购→购买: {funnel['buy_from_mid']*100:.2f}%",
+        ]
+        ax2.text(
+            0.03,
+            0.95,
+            "用户转化漏斗",
+            fontsize=14,
+            fontweight="bold",
+            va="top",
+        )
+        ax2.text(
+            0.03,
+            0.78,
+            "\n".join(funnel_lines),
+            fontsize=11,
+            va="top",
+            linespacing=1.8,
+            bbox={"boxstyle": "round,pad=0.5", "facecolor": "#F5FBF6", "edgecolor": "#55A868"},
+        )
+
+        # 左下：行为分布
+        ax3 = fig.add_subplot(gs[1, 0])
+        dist = metrics["behavior_dist"].sort("count", descending=True)
+        behaviors = dist["behavior_type"].to_list()
+        counts = dist["count"].to_list()
+        bars = ax3.bar(behaviors, counts, color=["#4C72B0", "#55A868", "#8172B3", "#C44E52"], width=0.55)
+        for bar, count in zip(bars, counts):
+            ax3.text(
+                bar.get_x() + bar.get_width() / 2,
+                count + max(counts) * 0.01,
+                f"{count:,}",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+            )
+        ax3.set_title("行为类型分布", fontsize=13, fontweight="bold")
+        ax3.set_ylabel("记录数", fontsize=11)
+        ax3.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{int(x):,}"))
+        ax3.grid(axis="y", alpha=0.3)
+
+        # 右下：异常账号摘要
+        ax4 = fig.add_subplot(gs[1, 1])
+        anomaly = metrics["anomaly"]
+        summary_labels = ["嫌疑账号数", "嫌疑流量请求数"]
+        summary_values = [anomaly["suspect_count"], anomaly["suspect_traffic"]]
+        bars = ax4.bar(summary_labels, summary_values, color=["#C44E52", "#DD8452"], width=0.55)
+        max_summary = max(summary_values) if summary_values else 1
+        for bar, val in zip(bars, summary_values):
+            ax4.text(
+                bar.get_x() + bar.get_width() / 2,
+                val + max_summary * 0.01,
+                f"{val:,}",
+                ha="center",
+                va="bottom",
+                fontsize=10,
+                fontweight="bold",
+            )
+        ax4.set_title("异常账号检测摘要", fontsize=13, fontweight="bold")
+        ax4.text(
+            0.98,
+            0.95,
+            f"阈值: {anomaly['threshold']}\n账号占比: {anomaly['suspect_ratio']*100:.4f}%\n流量占比: {anomaly['traffic_ratio']*100:.4f}%",
+            transform=ax4.transAxes,
+            ha="right",
+            va="top",
+            fontsize=10,
+            bbox={"boxstyle": "round,pad=0.35", "facecolor": "#FFF5F5", "edgecolor": "#C44E52"},
+        )
+        ax4.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{int(x):,}"))
+        ax4.grid(axis="y", alpha=0.3)
+
+        plt.tight_layout()
+        out_path = self.output_dir / "task5_final_chart.png"
+        fig.savefig(out_path.as_posix(), dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        log.info("实验报告图已保存: %s", out_path)
 
     def _write_chart(self, metrics: dict) -> None:
         fig, axes = plt.subplots(1, 3, figsize=(18, 6))
