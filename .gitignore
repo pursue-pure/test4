@@ -1,5 +1,3 @@
-Add-Content .gitignore "*.parquet"
-Add-Content .gitignore "!output/m1_final_clean.parquet"
-Add-Content .gitignore "output/*"
-Add-Content .gitignore "!output/"output/*
-!output/m1_final_clean.parquet
+output/_dedup_parts/
+output/m1_final_clean.parquet
+__pycache__/
